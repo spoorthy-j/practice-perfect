@@ -14,7 +14,155 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      interviews: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          difficulty: string
+          id: string
+          role: string
+          started_at: string | null
+          status: string
+          total_score: number | null
+          user_id: string
+          violations_count: number
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          difficulty: string
+          id?: string
+          role: string
+          started_at?: string | null
+          status?: string
+          total_score?: number | null
+          user_id: string
+          violations_count?: number
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          difficulty?: string
+          id?: string
+          role?: string
+          started_at?: string | null
+          status?: string
+          total_score?: number | null
+          user_id?: string
+          violations_count?: number
+        }
+        Relationships: []
+      }
+      profiles: {
+        Row: {
+          created_at: string
+          email: string
+          id: string
+          name: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          email?: string
+          id?: string
+          name?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          id?: string
+          name?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      questions: {
+        Row: {
+          created_at: string
+          id: string
+          interview_id: string
+          order_index: number
+          question_text: string
+          question_type: string
+          time_limit_seconds: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          interview_id: string
+          order_index: number
+          question_text: string
+          question_type: string
+          time_limit_seconds?: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          interview_id?: string
+          order_index?: number
+          question_text?: string
+          question_type?: string
+          time_limit_seconds?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "questions_interview_id_fkey"
+            columns: ["interview_id"]
+            isOneToOne: false
+            referencedRelation: "interviews"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      responses: {
+        Row: {
+          correct_answer: string | null
+          feedback: string | null
+          id: string
+          interview_id: string
+          question_id: string
+          score: number | null
+          submitted_at: string
+          user_answer: string
+        }
+        Insert: {
+          correct_answer?: string | null
+          feedback?: string | null
+          id?: string
+          interview_id: string
+          question_id: string
+          score?: number | null
+          submitted_at?: string
+          user_answer?: string
+        }
+        Update: {
+          correct_answer?: string | null
+          feedback?: string | null
+          id?: string
+          interview_id?: string
+          question_id?: string
+          score?: number | null
+          submitted_at?: string
+          user_answer?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "responses_interview_id_fkey"
+            columns: ["interview_id"]
+            isOneToOne: false
+            referencedRelation: "interviews"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "responses_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "questions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
