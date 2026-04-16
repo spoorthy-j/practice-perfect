@@ -2,11 +2,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { AlertTriangle, Clock, Camera, ChevronRight, Loader2 } from "lucide-react";
+import { AlertTriangle, Clock, Camera, ChevronRight, Loader2, Maximize, Shield } from "lucide-react";
 import CodeMirror from "@uiw/react-codemirror";
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
@@ -38,14 +37,55 @@ export default function InterviewSession() {
   const [violations, setViolations] = useState(0);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Camera setup
+  // Request fullscreen on mount
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
-      if (videoRef.current) videoRef.current.srcObject = stream;
-    }).catch(() => {});
+    const enterFullscreen = async () => {
+      try {
+        await document.documentElement.requestFullscreen();
+        setIsFullscreen(true);
+      } catch {
+        // Fullscreen may be blocked by browser
+      }
+    };
+    enterFullscreen();
+
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+
+    // Disable scrolling on body
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.body.style.overflow = "";
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    };
+  }, []);
+
+  // Camera setup with better constraints for face visibility
+  useEffect(() => {
+    navigator.mediaDevices
+      .getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: "user",
+        },
+      })
+      .then((stream) => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      })
+      .catch(() => {
+        toast({ title: "Camera Error", description: "Could not access camera. Proctoring requires camera access.", variant: "destructive" });
+      });
     return () => {
       if (videoRef.current?.srcObject) {
         (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
@@ -59,7 +99,11 @@ export default function InterviewSession() {
       if (document.hidden) {
         setViolations((v) => {
           const nv = v + 1;
-          toast({ title: "⚠️ Tab Switch Detected!", description: `Violation ${nv}/3. Return to your interview immediately.`, variant: "destructive" });
+          toast({
+            title: "⚠️ Tab Switch Detected!",
+            description: `Violation ${nv}/3. Return to your interview immediately.`,
+            variant: "destructive",
+          });
           return nv;
         });
       }
@@ -89,7 +133,6 @@ export default function InterviewSession() {
   useEffect(() => {
     if (!user) return;
     const init = async () => {
-      // Create interview record
       const { data: interview, error: intErr } = await supabase
         .from("interviews")
         .insert({ user_id: user.id, role, difficulty, status: "in_progress", started_at: new Date().toISOString() })
@@ -101,8 +144,7 @@ export default function InterviewSession() {
       }
       setInterviewId(interview.id);
 
-      // Generate questions via edge function
-      const { data: fnData, error: fnErr } = await supabase.functions.invoke("generate-questions", {
+      const { error: fnErr } = await supabase.functions.invoke("generate-questions", {
         body: { interviewId: interview.id, role, difficulty },
       });
       if (fnErr) {
@@ -110,7 +152,6 @@ export default function InterviewSession() {
         return;
       }
 
-      // Fetch generated questions
       const { data: qs } = await supabase
         .from("questions")
         .select("*")
@@ -135,7 +176,9 @@ export default function InterviewSession() {
         return t - 1;
       });
     }, 1000);
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, [currentIdx, loading, questions.length]);
 
   const handleNext = useCallback(() => {
@@ -164,7 +207,6 @@ export default function InterviewSession() {
       finalAnswers[questions[currentIdx].id] = answer;
     }
 
-    // Save all responses
     const responsesData = questions.map((q) => ({
       question_id: q.id,
       interview_id: interviewId!,
@@ -172,16 +214,15 @@ export default function InterviewSession() {
     }));
 
     await supabase.from("responses").insert(responsesData);
-
-    // Update violations
     await supabase.from("interviews").update({ violations_count: violations }).eq("id", interviewId!);
-
-    // Evaluate via edge function
     await supabase.functions.invoke("evaluate-answers", { body: { interviewId: interviewId! } });
 
-    // Stop camera
     if (videoRef.current?.srcObject) {
       (videoRef.current.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
+    }
+
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {});
     }
 
     navigate(`/results/${interviewId}`);
@@ -196,87 +237,159 @@ export default function InterviewSession() {
     return [javascript()];
   };
 
+  const progressPercent = questions.length > 0 ? ((currentIdx + 1) / questions.length) * 100 : 0;
+  const mins = Math.floor(timeLeft / 60);
+  const secs = timeLeft % 60;
+
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
-        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-muted-foreground">Generating your interview questions with AI...</p>
+      <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background gap-4">
+        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+        <p className="text-muted-foreground text-lg">Generating your interview questions with AI...</p>
+        <p className="text-muted-foreground/60 text-sm">Role: {role} • Difficulty: {difficulty}</p>
       </div>
     );
   }
 
-  const mins = Math.floor(timeLeft / 60);
-  const secs = timeLeft % 60;
-
   return (
-    <div className="max-w-4xl mx-auto space-y-4">
+    <div className="fixed inset-0 z-50 flex flex-col bg-background overflow-hidden select-none">
+      {/* Progress bar */}
+      <div className="h-1 w-full bg-secondary">
+        <div
+          className="h-full bg-primary transition-all duration-500 ease-out"
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+
       {/* Top bar */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card/80 backdrop-blur-sm">
         <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Shield className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold text-foreground">MockMaster AI</span>
+          </div>
+          <div className="h-4 w-px bg-border" />
           <span className="text-sm font-medium text-muted-foreground">
-            Question {currentIdx + 1} of {questions.length}
+            Question {currentIdx + 1}/{questions.length}
           </span>
-          <span className={`flex items-center gap-1 text-sm font-mono font-bold ${timeLeft < 30 ? "text-destructive" : "text-foreground"}`}>
-            <Clock className="h-4 w-4" /> {mins}:{secs.toString().padStart(2, "0")}
+          <span
+            className={`flex items-center gap-1.5 text-sm font-mono font-bold px-2.5 py-1 rounded-md ${
+              timeLeft < 30
+                ? "text-destructive bg-destructive/10 animate-pulse"
+                : "text-foreground bg-secondary"
+            }`}
+          >
+            <Clock className="h-3.5 w-3.5" />
+            {mins}:{secs.toString().padStart(2, "0")}
           </span>
         </div>
+
         <div className="flex items-center gap-3">
           {violations > 0 && (
-            <span className="flex items-center gap-1 text-xs text-destructive font-medium">
-              <AlertTriangle className="h-3 w-3" /> {violations} violation{violations > 1 ? "s" : ""}
+            <span className="flex items-center gap-1.5 text-xs text-destructive font-semibold bg-destructive/10 px-2.5 py-1 rounded-md">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {violations}/3 violations
             </span>
           )}
-          <div className="relative rounded-lg overflow-hidden border border-border w-24 h-18 bg-secondary">
-            <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-            <div className="absolute top-1 left-1 flex items-center gap-0.5 text-[10px] text-[hsl(var(--success))]">
-              <Camera className="h-2.5 w-2.5" /> LIVE
+
+          {!isFullscreen && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs"
+              onClick={() => document.documentElement.requestFullscreen().catch(() => {})}
+            >
+              <Maximize className="h-3.5 w-3.5" /> Fullscreen
+            </Button>
+          )}
+
+          {/* Camera preview */}
+          <div className="relative w-32 h-24 rounded-lg overflow-hidden border-2 border-primary/30 bg-black shadow-lg shadow-primary/5 flex-shrink-0">
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              playsInline
+              className="w-full h-full object-cover mirror"
+              style={{ transform: "scaleX(-1)" }}
+            />
+            <div className="absolute top-1.5 left-1.5 flex items-center gap-1 bg-black/60 backdrop-blur-sm rounded px-1.5 py-0.5">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="text-[10px] font-semibold text-white tracking-wider">
+                <Camera className="h-2.5 w-2.5 inline mr-0.5" />
+                LIVE
+              </span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Question */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-              isCoding ? "bg-primary/15 text-primary" : currentQ?.question_type === "hr" ? "bg-[hsl(var(--warning))]/15 text-[hsl(var(--warning))]" : "bg-[hsl(var(--success))]/15 text-[hsl(var(--success))]"
-            }`}>
-              {currentQ?.question_type === "coding" ? "Coding" : currentQ?.question_type === "hr" ? "HR/Behavioral" : "Technical"}
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto px-6 py-6 max-w-4xl mx-auto w-full">
+          {/* Question type badge */}
+          <div className="flex items-center gap-2 mb-3">
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                isCoding
+                  ? "bg-primary/15 text-primary"
+                  : currentQ?.question_type === "hr"
+                  ? "bg-amber-500/15 text-amber-500"
+                  : "bg-emerald-500/15 text-emerald-500"
+              }`}
+            >
+              {currentQ?.question_type === "coding"
+                ? "💻 Coding"
+                : currentQ?.question_type === "hr"
+                ? "🤝 HR/Behavioral"
+                : "🔧 Technical"}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {Math.ceil(currentQ?.time_limit_seconds / 60)} min time limit
             </span>
           </div>
-          <CardTitle className="text-lg mt-2">{currentQ?.question_text}</CardTitle>
-        </CardHeader>
-        <CardContent>
+
+          {/* Question text */}
+          <h2 className="text-xl font-semibold text-foreground mb-5 leading-relaxed">
+            {currentQ?.question_text}
+          </h2>
+
+          {/* Answer area */}
           {isCoding ? (
             <CodeMirror
               value={answer}
-              height="300px"
+              height="350px"
               theme={oneDark}
               extensions={getLanguageExt()}
               onChange={(val) => setAnswer(val)}
-              className="rounded-lg overflow-hidden border border-border"
+              className="rounded-lg overflow-hidden border border-border shadow-sm"
             />
           ) : (
             <Textarea
               placeholder="Type your answer here..."
               value={answer}
               onChange={(e) => setAnswer(e.target.value)}
-              className="min-h-[200px] resize-none"
+              className="min-h-[250px] resize-none text-base leading-relaxed"
             />
           )}
-        </CardContent>
-      </Card>
+        </div>
 
-      <div className="flex justify-end">
-        <Button onClick={handleNext} disabled={submitting} className="gap-2">
-          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          {currentIdx < questions.length - 1 ? (
-            <>Next <ChevronRight className="h-4 w-4" /></>
-          ) : (
-            "Submit Interview"
-          )}
-        </Button>
+        {/* Bottom action bar */}
+        <div className="border-t border-border bg-card/80 backdrop-blur-sm px-6 py-3 flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            {role} • {difficulty} difficulty
+          </span>
+          <Button onClick={handleNext} disabled={submitting} className="gap-2 px-6">
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            {currentIdx < questions.length - 1 ? (
+              <>
+                Next <ChevronRight className="h-4 w-4" />
+              </>
+            ) : (
+              "Submit Interview"
+            )}
+          </Button>
+        </div>
       </div>
     </div>
   );
